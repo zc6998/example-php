@@ -25,3 +25,4 @@ jobs:
           app-name: php-${{ github.ref_name }}
           service-ports: "8000:http"
           service-routes: "/:8000"
+          skip-cache: true
