@@ -1,4 +1,4 @@
- <?php
+<?php
 error_reporting(E_ALL);
 ini_set('display_errors', 1); // 调试时显示错误
 header('Content-Type: text/plain; charset=utf-8');
@@ -7,13 +7,7 @@ session_start();
 
 // 核心配置
 const CONFIG = [
-    'upstream'   => [
-    'http://198.16.100.186:8278/',
-    'http://50.7.92.106:8278/',  // 确保URL格式完整
-    'http://50.7.234.10:8278/',
-    'http://50.7.220.170:8278/',
-    'http://67.159.6.34:8278/'
-    ],
+    'upstream'   => 'http://50.7.234.10:8278/',
     'list_url'   => 'https://tv.alishare.cf/data/smart.txt',
     'token_ttl'  => 2400,  // 40分钟有效期
     'cache_ttl'  => 3600,  // 频道列表缓存1小时
@@ -21,15 +15,6 @@ const CONFIG = [
     'clear_key'  => 'leifeng',
     'backup_url' => 'https://backup.alishare.cf/smart1.txt' 
 ];
-
-// 获取当前轮询的上游服务器
-function getUpstream() {
-    static $index = 0;
-    $upstreams = CONFIG['upstream'];
-    $current = $upstreams[$index % count($upstreams)];
-    $index++;
-    return $current;
-}
 
 // 主路由控制
 try {
@@ -263,8 +248,7 @@ function manageToken() {
 
 // 生成M3U8播放列表
 function generateM3U8($channelId, $token) {
-    $upstream = getUpstream();
-    $authUrl = $upstream . "$channelId/playlist.m3u8?" . http_build_query([
+    $authUrl = CONFIG['upstream'] . "$channelId/playlist.m3u8?" . http_build_query([
         'tid'  => 'mc42afe745533',
         'ct'   => intval(time() / 150),
         'tsum' => md5("tvata nginx auth module/$channelId/playlist.m3u8mc42afe745533" . intval(time() / 150))
@@ -287,8 +271,7 @@ function generateM3U8($channelId, $token) {
 
 // 代理TS流
 function proxyTS($channelId, $tsFile) {
-    $upstream = getUpstream();
-    $url = $upstream . "$channelId/$tsFile";
+    $url = CONFIG['upstream'] . "$channelId/$tsFile";
     $data = fetchUrl($url);
     
     if ($data === null) {
