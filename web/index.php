@@ -3,18 +3,32 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1); // 调试时显示错误
 header('Content-Type: text/plain; charset=utf-8');
 date_default_timezone_set("Asia/Shanghai");
-session_start();
+// session_start(); //不使用session
 
 // 核心配置
 const CONFIG = [
-    'upstream'   => 'http://50.7.234.10:8278/',
-    'list_url'   => 'https://tv.alishare.cf/data/smart.txt',
+    'upstream'   => [
+    'http://198.16.100.186:8278/',
+    'http://50.7.92.106:8278/', 
+    'http://50.7.234.10:8278/',
+    'http://50.7.220.170:8278/',
+    'http://67.159.6.34:8278/'],
+    'list_url'   => 'https://cdn.jsdelivr.net/gh/hostemail/cdn@main/data/smart.txt',
+    'backup_url' => 'https://cdn.jsdelivr.net/gh/hostemail/cdn@main/data/smart1.txt', 
     'token_ttl'  => 2400,  // 40分钟有效期
     'cache_ttl'  => 3600,  // 频道列表缓存1小时
     'fallback'   => 'http://vjs.zencdn.net/v/oceans.mp4', 
-    'clear_key'  => 'leifeng',
-    'backup_url' => 'https://backup.alishare.cf/smart1.txt' 
+    'clear_key'  => 'leifeng'
 ];
+
+// 获取当前轮询的上游服务器
+function getUpstream() {
+    static $index = 0;
+    $upstreams = CONFIG['upstream'];
+    $current = $upstreams[$index % count($upstreams)];
+    $index++;
+    return $current;
+}
 
 // 主路由控制
 try {
@@ -28,6 +42,36 @@ try {
 } catch (Exception $e) {
     header('HTTP/1.1 503 Service Unavailable');
     exit("系统维护中，请稍后重试\n错误详情：" . $e->getMessage());
+}
+
+function fetch_remote_file($url, $timeout = 5)
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_CONNECTTIMEOUT => $timeout,
+        CURLOPT_TIMEOUT => $timeout,
+        CURLOPT_SSL_VERIFYPEER => true, // 如果有自签证书，可以设为 false
+        CURLOPT_HTTPHEADER => ['Cache-Control: no-cache']
+    ]);
+
+    $response = curl_exec($ch);
+
+    if (curl_errno($ch)) {
+        $err = curl_error($ch);
+        curl_close($ch);
+        throw new RuntimeException("CURL 请求失败: $err");
+    }
+
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($http_code >= 400) {
+        throw new RuntimeException("远程服务器返回 HTTP $http_code 错误");
+    }
+
+    return $response;
 }
 
 // 缓存清除
@@ -60,12 +104,12 @@ function clearCache() {
     } catch (Exception $e) {
         $results[] = '⚠️ 列表重建失败: ' . $e->getMessage();
     }
-
+    /* 不使用session
     $_SESSION = [];
     if (session_destroy()) {
         $results[] = '✅ Session已销毁';
     }
-
+    */
     header('Cache-Control: no-store');
     exit(implode("\n", $results));
 }
@@ -185,7 +229,7 @@ function fetchWithRetry($url, $maxRetries = 3) {
                 ]
             ]);
             
-            $raw = @file_get_contents($url, false, $ctx);
+            $raw = @fetch_remote_file($url, false, $ctx);
             if ($raw !== false) {
                 return $raw;
             }
@@ -218,7 +262,7 @@ function handleChannelRequest() {
     }
 }
 
-// Token管理
+/* Token管理V1:基于session 
 function manageToken() {
     $token = $_GET['token'] ?? '';
     
@@ -245,10 +289,51 @@ function manageToken() {
     
     return $token;
 }
+*/
+
+// Token管理V2:无session 
+function manageToken() {
+    $token = $_GET['token'] ?? '';
+    
+    // 验证现有Token是否有效（含40分钟时效检查）
+    if (!empty($token) && validateToken($token)) {
+        return $token;
+    }
+    
+    // 生成新Token（32位）
+    $newToken = bin2hex(random_bytes(16)) . ':' . time(); // 格式：随机值:时间戳
+    
+    // TS请求重定向逻辑保持不变
+    if (isset($_GET['ts'])) {
+        $url = getBaseUrl() . '/' . basename(__FILE__) . '?' . http_build_query([
+            'id'    => $_GET['id'],
+            'ts'    => $_GET['ts'],
+            'token' => $newToken
+        ]);
+        header("Location: $url");
+        exit();
+    }
+    
+    return $newToken;
+}
+
+function validateToken($token) {
+    // 解析Token格式：随机值:时间戳
+    $parts = explode(':', $token);
+    if (count($parts) !== 2) return false;
+    
+    $timestamp = (int)$parts[1];
+    $currentTime = time();
+    
+    // 验证时效性（40分钟内有效）
+    return ($currentTime - $timestamp) <= CONFIG['token_ttl']; // 2400秒=40分钟
+}
+
 
 // 生成M3U8播放列表
 function generateM3U8($channelId, $token) {
-    $authUrl = CONFIG['upstream'] . "$channelId/playlist.m3u8?" . http_build_query([
+    $upstream = getUpstream();
+    $authUrl = $upstream. "$channelId/playlist.m3u8?" . http_build_query([
         'tid'  => 'mc42afe745533',
         'ct'   => intval(time() / 150),
         'tsum' => md5("tvata nginx auth module/$channelId/playlist.m3u8mc42afe745533" . intval(time() / 150))
@@ -266,12 +351,14 @@ function generateM3U8($channelId, $token) {
     }, $content);
     
     header('Content-Type: application/vnd.apple.mpegurl');
+    header('Content-Disposition: inline; filename="' . $channelId . '.m3u8"');
     echo $content;
 }
 
 // 代理TS流
 function proxyTS($channelId, $tsFile) {
-    $url = CONFIG['upstream'] . "$channelId/$tsFile";
+    $upstream = getUpstream();
+    $url = $upstream . "$channelId/$tsFile";
     $data = fetchUrl($url);
     
     if ($data === null) {
